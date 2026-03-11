@@ -321,7 +321,7 @@ end)
 
 task.spawn(function()
     while true do
-        task.wait(1.5)
+        task.wait(1)
         if not ST.farmOn then continue end
         local targ  = getgenv().targ
         if not targ or not targ.Character then continue end
