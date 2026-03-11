@@ -22,6 +22,7 @@ local CFG = {
     TELEPORT_INTERVAL = 2,
     HOP_INTERVAL      = 300,
     RAID_DIST         = 300,
+    RESET_INTERVAL    = 7,
 }
 
 local ST = {
@@ -31,6 +32,8 @@ local ST = {
     lastBounty   = 0,
     targIdx      = 1,
     hopTimer     = 0,
+    resetTimer   = 0,
+    escapingZone = false,
 }
 
 local ServerBlacklist = {}
@@ -73,9 +76,9 @@ local function inSafe(hrp)
             end
         end
         if r then return end
-        local main = lp.PlayerGui:FindFirstChild("Main") if not main then return end
+        local mainGui = lp.PlayerGui:FindFirstChild("Main") if not mainGui then return end
         for _, n in ipairs({"SafeZone","[OLD]SafeZone"}) do
-            local f = main:FindFirstChild(n)
+            local f = mainGui:FindFirstChild(n)
             if f and f.Visible then r = true return end
         end
     end)
@@ -130,9 +133,78 @@ local function hopServer()
     if not ok then TeleSvc:Teleport(game.PlaceId) end
 end
 
-game.Players.LocalPlayer.OnTeleport:Connect(function(state)
-    if state == Enum.TeleportState.Failed and ST.hopOn then task.spawn(hopServer) end
+lp.AncestryChanged:Connect(function(_, parent)
+    if not parent then
+        pcall(function() TeleSvc:Teleport(game.PlaceId) end)
+    end
 end)
+
+game:GetService("Players").PlayerRemoving:Connect(function(p)
+    if p == lp then
+        pcall(function() TeleSvc:Teleport(game.PlaceId) end)
+    end
+end)
+
+lp.OnTeleport:Connect(function(state)
+    if state == Enum.TeleportState.Failed then
+        task.spawn(function() TeleSvc:Teleport(game.PlaceId) end)
+    end
+end)
+
+local function escapeAndTeleport(targ)
+    local myC   = ch()
+    local myHRP = myC and myC:FindFirstChild("HumanoidRootPart")
+    if not myHRP then return end
+
+    local thrp = targ and targ.Character and targ.Character:FindFirstChild("HumanoidRootPart")
+
+    ST.escapingZone = true
+
+    local highPos = myHRP.Position + Vector3.new(0, 3000, 0)
+    local flyPart = Instance.new("Part")
+    flyPart.Anchored = true
+    flyPart.CanCollide = false
+    flyPart.Transparency = 1
+    flyPart.Size = Vector3.new(1,1,1)
+    flyPart.CFrame = myHRP.CFrame
+    flyPart.Parent = workspace
+
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0 = myHRP
+    weld.Part1 = flyPart
+    weld.Parent = flyPart
+
+    local hum = myC:FindFirstChild("Humanoid")
+    if hum then hum.PlatformStand = true end
+
+    local tween = TweenService:Create(flyPart, TweenInfo.new(1.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        CFrame = CFrame.new(highPos)
+    })
+    tween:Play()
+
+    task.spawn(function()
+        task.wait(0.6)
+        if thrp then
+            pcall(function()
+                myHRP.CFrame = CFrame.new(thrp.Position + Vector3.new(0, 3, 0))
+                getgenv().targ = targ
+            end)
+        end
+        tween:Cancel()
+        weld:Destroy()
+        flyPart:Destroy()
+        if hum then hum.PlatformStand = false end
+        ST.escapingZone = false
+    end)
+end
+
+local function doReset()
+    pcall(function()
+        local c = ch() if not c then return end
+        local hum = c:FindFirstChild("Humanoid") if not hum then return end
+        hum.Health = 0
+    end)
+end
 
 task.spawn(function()
     repeat task.wait() until game:IsLoaded()
@@ -160,8 +232,37 @@ end)
 
 task.spawn(function()
     while true do
+        task.wait(1)
+        ST.resetTimer += 1
+        if ST.resetTimer >= CFG.RESET_INTERVAL then
+            ST.resetTimer = 0
+            doReset()
+        end
+    end
+end)
+
+task.spawn(function()
+    while true do
         task.wait(CFG.TELEPORT_INTERVAL)
         if not ST.farmOn then continue end
+
+        local myC   = ch()
+        local myHRP = myC and myC:FindFirstChild("HumanoidRootPart")
+        if myHRP and inSafe(myHRP) and not ST.escapingZone then
+            local plrList = {}
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= lp and p.Character then
+                    local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+                    if hrp and not inSafe(hrp) and not checkRaid(p) then
+                        table.insert(plrList, p)
+                    end
+                end
+            end
+            local targ = #plrList > 0 and plrList[1] or nil
+            task.spawn(function() escapeAndTeleport(targ) end)
+            continue
+        end
+
         local plrList = {}
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= lp and p.Character then
@@ -176,8 +277,6 @@ task.spawn(function()
         local targ = plrList[ST.targIdx]
         if targ and targ.Character then
             local thrp = targ.Character:FindFirstChild("HumanoidRootPart")
-            local myC  = ch()
-            local myHRP = myC and myC:FindFirstChild("HumanoidRootPart")
             if thrp and myHRP then
                 pcall(function()
                     myHRP.CFrame = CFrame.new(thrp.Position + Vector3.new(0, 3, 0))
@@ -212,7 +311,7 @@ task.spawn(function()
             ST.hopTimer = 0
             task.spawn(hopServer)
         end
-        local cur = getCurrentBounty()
+        local cur   = getCurrentBounty()
         local delta = cur - ST.lastBounty
         if delta > 0 then ST.bountyEarned += delta end
         ST.lastBounty = cur
@@ -298,7 +397,6 @@ statusTxt.Text = "● ATIVO"
 statusTxt.TextColor3 = Color3.fromRGB(185, 80, 255)
 statusTxt.TextSize = 10
 statusTxt.Font = Enum.Font.GothamBold
-
 TweenService:Create(statusPill, TweenInfo.new(1.1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
     BackgroundColor3 = Color3.fromRGB(85, 0, 165)
 }):Play()
@@ -412,7 +510,6 @@ Instance.new("UICorner", resetBtn).CornerRadius = UDim.new(0, 10)
 local rbs = Instance.new("UIStroke", resetBtn)
 rbs.Color = Color3.fromRGB(90, 0, 160)
 rbs.Thickness = 1
-
 resetBtn.MouseButton1Click:Connect(function()
     ST.bountyEarned = 0
     TweenService:Create(resetBtn, TweenInfo.new(0.12), {BackgroundColor3 = Color3.fromRGB(55,0,115)}):Play()
@@ -427,4 +524,9 @@ RunService.Heartbeat:Connect(function()
     valEarned.Text = tostring(ST.bountyEarned)
     local rem = CFG.HOP_INTERVAL - ST.hopTimer
     valTimer.Text  = ("%d:%02d"):format(math.floor(rem/60), rem%60)
+    if ST.escapingZone then
+        statusTxt.Text = "🟡 SAINDO ZONA"
+    else
+        statusTxt.Text = "● ATIVO"
+    end
 end)
